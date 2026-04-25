@@ -1,2 +1,2 @@
 # Career-Trend-Analyzer
-job finding platform for students
+Job finding platform for students
