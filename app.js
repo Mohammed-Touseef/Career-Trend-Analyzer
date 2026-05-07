@@ -1,7 +1,8 @@
 const savedUserData = JSON.parse(localStorage.getItem('careerVibeUser'));
+const isLoggedIn = localStorage.getItem('careerVibeSession') === 'true';
 
 let state = {
-    currentScreen: 'login',
+    currentScreen: (isLoggedIn && savedUserData) ? 'profile' : 'login',
     theme: 'default',
     user: savedUserData || {
         name: 'Alex Johnson',
@@ -43,9 +44,52 @@ function saveUserToLocalStorage() {
     localStorage.setItem('careerVibeUser', JSON.stringify(state.user));
 }
 
+// ─── Analytics ──────────────────────────────────────────────────────────────
+function getAnalytics() {
+    return JSON.parse(localStorage.getItem('careerVibeAnalytics')) || {
+        totalSessions: 0,
+        pageViews: {},
+        registeredUsers: [],
+        loginHistory: []
+    };
+}
+function saveAnalytics(data) {
+    localStorage.setItem('careerVibeAnalytics', JSON.stringify(data));
+}
+function trackPageView(screen) {
+    const a = getAnalytics();
+    a.pageViews[screen] = (a.pageViews[screen] || 0) + 1;
+    saveAnalytics(a);
+}
+function trackLoginEvent(email, action) {
+    const a = getAnalytics();
+    a.loginHistory.unshift({ email, action, timestamp: new Date().toISOString() });
+    if (a.loginHistory.length > 100) a.loginHistory = a.loginHistory.slice(0, 100);
+    saveAnalytics(a);
+}
+function trackRegistration(user) {
+    const a = getAnalytics();
+    const idx = a.registeredUsers.findIndex(u => u.email === user.email);
+    const entry = { name: user.name, email: user.email, degree: user.degree, joinedAt: new Date().toISOString() };
+    if (idx >= 0) a.registeredUsers[idx] = entry;
+    else a.registeredUsers.unshift(entry);
+    saveAnalytics(a);
+}
+// Increment session count on every app open
+(function () {
+    const a = getAnalytics();
+    a.totalSessions = (a.totalSessions || 0) + 1;
+    saveAnalytics(a);
+})();
+
+// Admin credentials
+const ADMIN_EMAIL = 'admin@careervibe.com';
+const ADMIN_PASSWORD = 'Admin@123';
+
+
 const softwareJobs = [
-    "Frontend Developer", "Backend Engineer", "Full Stack Developer", "Mobile App Developer", 
-    "DevOps Engineer", "Cloud Architect", "Data Scientist", "AI Engineer", 
+    "Frontend Developer", "Backend Engineer", "Full Stack Developer", "Mobile App Developer",
+    "DevOps Engineer", "Cloud Architect", "Data Scientist", "AI Engineer",
     "Software Tester", "UI/UX Designer", "Cybersecurity Analyst", "Database Administrator",
     "Blockchain Developer", "Embedded Systems Engineer", "Game Developer"
 ];
@@ -123,7 +167,7 @@ const generateInternships = (count) => {
         const platform = ["Internshala", "LinkedIn", "Naukri"][i % 3];
         const title = internshipTitles[i % internshipTitles.length];
         const stipend = ["₹5,000 - ₹10,000", "Unpaid (Certificate Only)", "₹15,000 /Month", "Performance Based", "₹12,000 /Month"][i % 5];
-        
+
         internships.push({
             id: `internship-${i}`,
             title: title,
@@ -131,8 +175,8 @@ const generateInternships = (count) => {
             location: ["Remote", "Work from Home", "Bangalore", "Delhi", "Pune", "Hyderabad"][i % 6],
             platform: platform,
             stipend: stipend,
-            link: platform === "Internshala" ? `https://internshala.com/internships/keywords-${encodeURIComponent(title)}` : 
-                  (platform === "LinkedIn" ? `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(title)}` : `https://www.naukri.com/${title.toLowerCase().replace(/ /g, '-')}-jobs`)
+            link: platform === "Internshala" ? `https://internshala.com/internships/keywords-${encodeURIComponent(title)}` :
+                (platform === "LinkedIn" ? `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(title)}` : `https://www.naukri.com/${title.toLowerCase().replace(/ /g, '-')}-jobs`)
         });
     }
     return internships;
@@ -261,14 +305,14 @@ const certificationsData = {
 
 function toggleSave(event, item, type) {
     if (event) event.stopPropagation();
-    
+
     const index = state.savedItems.findIndex(i => i.id === item.id);
     if (index === -1) {
         state.savedItems.push({ ...item, type });
     } else {
         state.savedItems.splice(index, 1);
     }
-    
+
     saveToLocalStorage();
     render();
 }
@@ -318,7 +362,7 @@ function handleImageUpload(event) {
 
 function handleProfileSave(event) {
     if (event) event.preventDefault();
-    
+
     const name = document.getElementById('profileName').value;
     const email = document.getElementById('profileEmail').value;
     const phone = document.getElementById('profilePhone').value;
@@ -338,7 +382,7 @@ function handleProfileSave(event) {
     const edu10Board = document.getElementById('edu10Board').value;
     const edu10Year = document.getElementById('edu10Year').value;
     const edu10Score = document.getElementById('edu10Score').value;
-    
+
     const edu12School = document.getElementById('edu12School').value;
     const edu12Board = document.getElementById('edu12Board').value;
     const edu12Year = document.getElementById('edu12Year').value;
@@ -465,7 +509,7 @@ function renderHeader() {
                 </a>
                 
                 <div style="margin-top: auto; padding: 20px;">
-                    <button class="btn" style="padding: 12px; font-size: 0.9rem; background: rgba(239, 68, 68, 0.1); color: #ef4444;" onclick="navigate('login'); toggleMenu();">
+                    <button class="btn" style="padding: 12px; font-size: 0.9rem; background: rgba(239, 68, 68, 0.1); color: #ef4444;" onclick="handleLogout(); toggleMenu();">
                         <i data-lucide="log-out"></i> Logout
                     </button>
                 </div>
@@ -525,6 +569,7 @@ function renderProfileModal() {
                                 <option value="MCOM" ${state.user.degree === 'MCOM' ? 'selected' : ''}>MCOM</option>
                                 <option value="MTECH" ${state.user.degree === 'MTECH' ? 'selected' : ''}>MTECH</option>
                                 <option value="MBA" ${state.user.degree === 'MBA' ? 'selected' : ''}>MBA</option>
+                                <option value="OTHERS" ${state.user.degree === 'OTHERS' ? 'selected' : ''}>OTHERS</option>
                             </select>
                         </div>
                         <div class="input-group form-full">
@@ -655,17 +700,20 @@ const screens = {
             <div class="glass-card" style="width: 100%; text-align: left;">
                 <div class="input-group">
                     <label>Email Address</label>
-                    <input type="email" id="loginEmail" placeholder="student@example.com" value="student@university.edu">
+                    <input type="email" id="loginEmail" placeholder="student@example.com">
                 </div>
                 <div class="input-group">
                     <label>Password</label>
-                    <input type="password" id="loginPassword" placeholder="••••••••" value="password123">
+                    <input type="password" id="loginPassword" placeholder="••••••••">
                 </div>
                 <button class="btn btn-primary" onclick="handleLogin()">
                     Login <i data-lucide="log-in"></i>
                 </button>
                 <p style="margin-top: 24px; font-size: 0.9rem; text-align: center;">
                     Don't have an account? <a href="javascript:void(0)" onclick="navigate('signup')" style="color: var(--secondary); font-weight: 600; text-decoration: none;">Sign Up</a>
+                </p>
+                <p style="margin-top: 12px; text-align: center;">
+                    <a href="javascript:void(0)" onclick="navigate('adminLogin')" style="font-size: 0.78rem; opacity: 0.45; color: var(--text); text-decoration: none; letter-spacing: 0.03em;">Admin Access</a>
                 </p>
             </div>
         </div>
@@ -721,8 +769,8 @@ const screens = {
 
             <div class="scholarship-list">
                 ${scholarshipData.map(s => {
-                    const isSaved = state.savedItems.some(i => i.id === s.id);
-                    return `
+        const isSaved = state.savedItems.some(i => i.id === s.id);
+        return `
                     <div class="glass-card" style="padding: 20px; margin-bottom: 16px; ${s.color ? `border-left: 4px solid ${s.color};` : ''}">
                         <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px;">
                             <div>
@@ -784,6 +832,7 @@ const screens = {
                         <option value="MCOM">MCOM</option>
                         <option value="MTECH">MTECH</option>
                         <option value="MBA">MBA</option>
+                        <option value="OTHERS">OTHERS</option>
                     </select>
                 </div>
                 <button class="btn btn-primary" onclick="handleSignup()">
@@ -819,8 +868,8 @@ const screens = {
                 </h4>
                 <div class="job-container">
                     ${state.naukriJobs.software.map(job => {
-                        const isSaved = state.savedItems.some(i => i.id === job.id);
-                        return `
+        const isSaved = state.savedItems.some(i => i.id === job.id);
+        return `
                         <div class="job-card fade-in" onclick="window.open('${job.link}', '_blank')">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <span class="job-platform platform-naukri">Naukri</span>
@@ -845,8 +894,8 @@ const screens = {
                 </h4>
                 <div class="job-container">
                     ${state.naukriJobs.commerce.map(job => {
-                        const isSaved = state.savedItems.some(i => i.id === job.id);
-                        return `
+            const isSaved = state.savedItems.some(i => i.id === job.id);
+            return `
                         <div class="job-card fade-in" onclick="window.open('${job.link}', '_blank')">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <span class="job-platform platform-naukri">Naukri</span>
@@ -871,8 +920,8 @@ const screens = {
                 </h4>
                 <div class="job-container">
                     ${state.naukriJobs.business.map(job => {
-                        const isSaved = state.savedItems.some(i => i.id === job.id);
-                        return `
+                const isSaved = state.savedItems.some(i => i.id === job.id);
+                return `
                         <div class="job-card fade-in" onclick="window.open('${job.link}', '_blank')">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <span class="job-platform platform-naukri">Naukri</span>
@@ -933,6 +982,7 @@ const screens = {
                         <option value="MCOM">MCOM</option>
                         <option value="MTECH">MTECH</option>
                         <option value="MBA">MBA</option>
+                        <option value="OTHERS">OTHERS</option>
                     </select>
                 </div>
 
@@ -948,7 +998,7 @@ const screens = {
     recommendations: () => {
         const jobs = getJobsForDegree(state.selectedDegree);
         const degreeName = state.selectedDegree || 'your degree';
-        
+
         return `
         <div class="fade-in">
             <div class="back-btn" onclick="navigate('degree')">
@@ -966,8 +1016,8 @@ const screens = {
                 </h3>
                 <div class="glass-card" style="padding: 24px;">
                     ${getCoursesForDegree(state.selectedDegree).map(course => {
-                        const isSaved = state.savedItems.some(i => i.id === course.id);
-                        return `
+            const isSaved = state.savedItems.some(i => i.id === course.id);
+            return `
                         <div class="list-item" style="cursor: pointer; position: relative;" onclick="window.open('${course.link}', '_blank')">
                             <div style="flex: 1;">
                                 <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
@@ -1000,8 +1050,8 @@ const screens = {
                 </h3>
                 <div class="job-container">
                     ${jobs.map(job => {
-                        const isSaved = state.savedItems.some(i => i.id === job.id);
-                        return `
+                const isSaved = state.savedItems.some(i => i.id === job.id);
+                return `
                         <div class="job-card fade-in" onclick="window.open('${job.link}', '_blank')" style="background: rgba(255,255,255,0.05);">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <div style="display: flex; align-items: center; gap: 8px;">
@@ -1042,8 +1092,8 @@ const screens = {
 
             <div class="list-container" style="display: flex; flex-direction: column; gap: 16px; padding-bottom: 40px;">
                 ${state.allJobOpenings.map(job => {
-                    const isSaved = state.savedItems.some(i => i.id === job.id);
-                    return `
+        const isSaved = state.savedItems.some(i => i.id === job.id);
+        return `
                     <div class="glass-card" style="margin-bottom: 0; cursor: pointer; padding: 20px;" onclick="window.open('${job.link}', '_blank')">
                         <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
                             <div style="flex: 1;">
@@ -1079,8 +1129,8 @@ const screens = {
 
             <div class="list-container" style="display: flex; flex-direction: column; gap: 16px; padding-bottom: 40px;">
                 ${state.allInternships.map(intern => {
-                    const isSaved = state.savedItems.some(i => i.id === intern.id);
-                    return `
+        const isSaved = state.savedItems.some(i => i.id === intern.id);
+        return `
                     <div class="glass-card" style="margin-bottom: 0; cursor: pointer; padding: 22px;" onclick="window.open('${intern.link}', '_blank')">
                         <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
                             <div style="flex: 1;">
@@ -1300,16 +1350,163 @@ const screens = {
                 </div>
             </div>
         </div>
-    `
+    `,
+
+    adminLogin: () => `
+        <div class="admin-login-screen fade-in">
+            <div class="admin-login-box glass-card">
+                <div style="text-align: center; margin-bottom: 32px;">
+                    <div class="avatar" style="width: 72px; height: 72px; margin: 0 auto 16px; border-radius: 20px; background: linear-gradient(135deg, #ef4444, #b91c1c);">
+                        <i data-lucide="shield" style="width: 34px; height: 34px;"></i>
+                    </div>
+                    <h2 style="font-size: 1.8rem; margin: 0 0 6px;">Admin Panel</h2>
+                    <p style="font-size: 0.9rem; opacity: 0.55;">CareerVibe Administration</p>
+                </div>
+                <div class="input-group">
+                    <label>Admin Email</label>
+                    <input type="email" id="adminEmail" placeholder="admin@careervibe.com">
+                </div>
+                <div class="input-group">
+                    <label>Password</label>
+                    <input type="password" id="adminPassword" placeholder="••••••••">
+                </div>
+                <button class="btn btn-primary" onclick="handleAdminLogin()" style="width: 100%; background: linear-gradient(135deg, #ef4444, #b91c1c); border: none;">
+                    Sign In <i data-lucide="shield-check"></i>
+                </button>
+                <p style="margin-top: 20px; font-size: 0.85rem; text-align: center;">
+                    <a href="javascript:void(0)" onclick="navigate('login')" style="color: var(--secondary); text-decoration: none;">← Back to User Login</a>
+                </p>
+            </div>
+        </div>
+    `,
+
+    adminDashboard: () => {
+        const analytics = getAnalytics();
+        const users = analytics.registeredUsers;
+        const pageViews = analytics.pageViews;
+        const loginHistory = analytics.loginHistory;
+        const totalPageViews = Object.values(pageViews).reduce((a, b) => a + b, 0);
+        const maxViews = Math.max(...Object.values(pageViews), 1);
+
+        const pageViewBars = Object.entries(pageViews)
+            .sort((a, b) => b[1] - a[1])
+            .map(([screen, count]) => `
+                <div class="admin-bar-row">
+                    <span class="admin-bar-label">${screen.charAt(0).toUpperCase() + screen.slice(1)}</span>
+                    <div class="admin-bar-track">
+                        <div class="admin-bar-fill" style="width:${Math.round(count / maxViews * 100)}%"></div>
+                    </div>
+                    <span class="admin-bar-count">${count}</span>
+                </div>`).join('');
+
+        const userRows = users.length
+            ? users.map(u => `
+                <tr>
+                    <td>${u.name}</td>
+                    <td style="font-size:0.8rem;opacity:0.75">${u.email}</td>
+                    <td><span class="admin-badge">${u.degree}</span></td>
+                    <td style="font-size:0.8rem;opacity:0.65">${new Date(u.joinedAt).toLocaleDateString()}</td>
+                </tr>`).join('')
+            : `<tr><td colspan="4" style="text-align:center;opacity:0.45;padding:20px">No users registered yet</td></tr>`;
+
+        const loginRows = loginHistory.slice(0, 12).length
+            ? loginHistory.slice(0, 12).map(l => `
+                <tr>
+                    <td style="font-size:0.8rem;opacity:0.75">${l.email}</td>
+                    <td><span class="admin-badge admin-badge-${l.action === 'logout' ? 'red' : 'green'}">${l.action}</span></td>
+                    <td style="font-size:0.78rem;opacity:0.6">${new Date(l.timestamp).toLocaleString()}</td>
+                </tr>`).join('')
+            : `<tr><td colspan="3" style="text-align:center;opacity:0.45;padding:20px">No activity yet</td></tr>`;
+
+        return `
+        <div class="admin-dashboard fade-in">
+            <div class="admin-header">
+                <div>
+                    <h1 style="font-size:1.8rem;margin:0;">Admin Dashboard</h1>
+                    <p style="opacity:0.55;margin:4px 0 0;font-size:0.88rem;">CareerVibe Analytics &amp; Management</p>
+                </div>
+                <button class="btn" onclick="navigate('login')" style="background:rgba(239,68,68,0.1);color:#ef4444;padding:10px 16px;display:flex;align-items:center;gap:8px;">
+                    <i data-lucide="log-out" style="width:16px;height:16px;"></i> Exit Admin
+                </button>
+            </div>
+
+            <div class="admin-stats-grid">
+                <div class="glass-card admin-stat-card">
+                    <div class="admin-stat-icon" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);">
+                        <i data-lucide="users" style="width:22px;height:22px;"></i>
+                    </div>
+                    <div class="admin-stat-value">${users.length}</div>
+                    <div class="admin-stat-label">Registered Users</div>
+                </div>
+                <div class="glass-card admin-stat-card">
+                    <div class="admin-stat-icon" style="background:linear-gradient(135deg,#0ea5e9,#06b6d4);">
+                        <i data-lucide="activity" style="width:22px;height:22px;"></i>
+                    </div>
+                    <div class="admin-stat-value">${analytics.totalSessions}</div>
+                    <div class="admin-stat-label">App Sessions</div>
+                </div>
+                <div class="glass-card admin-stat-card">
+                    <div class="admin-stat-icon" style="background:linear-gradient(135deg,#f59e0b,#f97316);">
+                        <i data-lucide="eye" style="width:22px;height:22px;"></i>
+                    </div>
+                    <div class="admin-stat-value">${totalPageViews}</div>
+                    <div class="admin-stat-label">Total Page Views</div>
+                </div>
+                <div class="glass-card admin-stat-card">
+                    <div class="admin-stat-icon" style="background:linear-gradient(135deg,#10b981,#059669);">
+                        <i data-lucide="log-in" style="width:22px;height:22px;"></i>
+                    </div>
+                    <div class="admin-stat-value">${loginHistory.filter(l => l.action === 'login' || l.action === 'signup').length}</div>
+                    <div class="admin-stat-label">Total Logins</div>
+                </div>
+            </div>
+
+            <div class="glass-card" style="margin-bottom:20px;">
+                <h3 style="margin:0 0 20px;font-size:1.05rem;display:flex;align-items:center;gap:8px;">
+                    <i data-lucide="bar-chart-2" style="width:18px;height:18px;color:var(--primary);"></i>
+                    Feature Usage
+                </h3>
+                ${pageViewBars || '<p style="opacity:0.45;text-align:center;padding:20px 0">No page views yet — users need to navigate the app first.</p>'}
+            </div>
+
+            <div class="admin-tables-grid">
+                <div class="glass-card">
+                    <h3 style="margin:0 0 16px;font-size:1.05rem;display:flex;align-items:center;gap:8px;">
+                        <i data-lucide="user-check" style="width:18px;height:18px;color:var(--primary);"></i>
+                        Registered Users
+                    </h3>
+                    <div style="overflow-x:auto;">
+                        <table class="admin-table">
+                            <thead><tr><th>Name</th><th>Email</th><th>Degree</th><th>Joined</th></tr></thead>
+                            <tbody>${userRows}</tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="glass-card">
+                    <h3 style="margin:0 0 16px;font-size:1.05rem;display:flex;align-items:center;gap:8px;">
+                        <i data-lucide="clock" style="width:18px;height:18px;color:var(--primary);"></i>
+                        Recent Activity
+                    </h3>
+                    <div style="overflow-x:auto;">
+                        <table class="admin-table">
+                            <thead><tr><th>Email</th><th>Action</th><th>Time</th></tr></thead>
+                            <tbody>${loginRows}</tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        `;
+    }
 };
 
 function handleFeedbackSubmit(event) {
     event.preventDefault();
-    
+
     // Simulate API call
     document.querySelector('form').style.display = 'none';
     document.getElementById('feedbackSuccess').style.display = 'block';
-    
+
     // Refresh icons for success card
     if (typeof lucide !== 'undefined') {
         lucide.createIcons();
@@ -1318,7 +1515,15 @@ function handleFeedbackSubmit(event) {
 
 function navigate(screenName) {
     state.currentScreen = screenName;
+    const skipTracking = ['login', 'signup', 'adminLogin', 'adminDashboard'];
+    if (!skipTracking.includes(screenName)) trackPageView(screenName);
     render();
+}
+
+function handleLogout() {
+    trackLoginEvent(state.user.email || '', 'logout');
+    localStorage.removeItem('careerVibeSession');
+    navigate('login');
 }
 
 function handleLogin() {
@@ -1330,12 +1535,24 @@ function handleLogin() {
         return;
     }
 
-    // Optional: Add more strict criteria if needed
-    if (password.length < 6) {
-        alert('Password should be at least 6 characters.');
+    const saved = JSON.parse(localStorage.getItem('careerVibeUser'));
+    if (!saved) {
+        alert('No account found. Please sign up first.');
+        navigate('signup');
+        return;
+    }
+    if (saved.email !== email) {
+        alert('Email not found. Please check your email or sign up.');
+        return;
+    }
+    if (saved.password !== password) {
+        alert('Incorrect password. Please try again.');
         return;
     }
 
+    state.user = saved;
+    localStorage.setItem('careerVibeSession', 'true');
+    trackLoginEvent(email, 'login');
     navigate('profile');
 }
 
@@ -1370,13 +1587,25 @@ function handleSignup() {
         name: name,
         degree: degree,
         interests: ['Career Planning', 'Job Trends'], // Default interests
-        email: email
+        email: email,
+        password: password
     };
 
     saveUserToLocalStorage();
+    localStorage.setItem('careerVibeSession', 'true');
+    trackRegistration(state.user);
+    trackLoginEvent(email, 'signup');
 
     // Simulate success and navigate
     navigate('profile');
+}
+
+function handleAdminLogin() {
+    const email = document.getElementById('adminEmail').value.trim();
+    const password = document.getElementById('adminPassword').value;
+    if (!email || !password) { alert('Please enter admin credentials.'); return; }
+    if (email !== ADMIN_EMAIL || password !== ADMIN_PASSWORD) { alert('Invalid admin credentials.'); return; }
+    navigate('adminDashboard');
 }
 
 function getCoursesForDegree(degree) {
@@ -1403,34 +1632,34 @@ function getJobsForDegree(degree) {
         'BBA': 'business',
         'MBA': 'business'
     };
-    
+
     const category = mapping[degree] || 'software';
     const homeJobs = state.naukriJobs[category] || [];
-    
+
     // Also search in allJobOpenings for keywords
     const keywords = {
         'software': ['Developer', 'Engineer', 'Cloud', 'Data', 'AI', 'Full Stack', 'Backend', 'Frontend'],
         'commerce': ['Accountant', 'Banker', 'Financial', 'Auditor', 'Broker', 'Tax'],
         'business': ['Manager', 'HR', 'Marketing', 'Product', 'Sales', 'Business']
     };
-    
+
     const relevantKeywords = keywords[category] || [];
-    const otherJobs = state.allJobOpenings.filter(job => 
+    const otherJobs = state.allJobOpenings.filter(job =>
         relevantKeywords.some(kw => job.title.includes(kw))
     );
-    
+
     // Combine and remove duplicates by title
     const combined = [...homeJobs, ...otherJobs];
     const unique = [];
     const titles = new Set();
-    
+
     combined.forEach(job => {
         if (!titles.has(job.title)) {
             titles.add(job.title);
             unique.push(job);
         }
     });
-    
+
     return unique.slice(0, 10); // Return top 10 relevant jobs
 }
 
@@ -1446,14 +1675,20 @@ function handleSpinnerSubmit() {
 function render() {
     const app = document.getElementById('app');
     if (!app) return;
-    
-    app.innerHTML = renderHeader() + screens[state.currentScreen]() + renderProfileModal();
-    
+
+    const adminScreens = ['adminLogin', 'adminDashboard'];
+    if (adminScreens.includes(state.currentScreen)) {
+        const screenFn = screens[state.currentScreen];
+        app.innerHTML = typeof screenFn === 'function' ? screenFn() : screenFn;
+    } else {
+        app.innerHTML = renderHeader() + screens[state.currentScreen]() + renderProfileModal();
+    }
+
     // Initialize Lucide icons after rendering content
     if (typeof lucide !== 'undefined') {
         lucide.createIcons();
     }
-    
+
     // Scroll to top
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
