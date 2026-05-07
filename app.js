@@ -33,7 +33,9 @@ let state = {
         commerce: [],
         business: []
     },
-    savedItems: JSON.parse(localStorage.getItem('careerVibeSaved')) || []
+    savedItems: JSON.parse(localStorage.getItem('careerVibeSaved')) || [],
+    adminData: null,
+    adminDataLoading: false
 };
 
 function saveToLocalStorage() {
@@ -61,19 +63,52 @@ function trackPageView(screen) {
     a.pageViews[screen] = (a.pageViews[screen] || 0) + 1;
     saveAnalytics(a);
 }
-function trackLoginEvent(email, action) {
+async function trackLoginEvent(email, action) {
     const a = getAnalytics();
-    a.loginHistory.unshift({ email, action, timestamp: new Date().toISOString() });
+    const entry = { email, action, timestamp: new Date().toISOString() };
+    a.loginHistory.unshift(entry);
     if (a.loginHistory.length > 100) a.loginHistory = a.loginHistory.slice(0, 100);
     saveAnalytics(a);
+    addLoginEventToFirestore(entry).catch(() => {});
+    updateUserLoginStats(email, action).catch(() => {});
+    // Sync to shared cloud storage
+    const shared = await fetchSharedData();
+    if (shared) {
+        shared.loginHistory = [entry, ...(shared.loginHistory || [])].slice(0, 100);
+        await updateSharedData(shared);
+    }
 }
-function trackRegistration(user) {
+async function trackRegistration(user) {
     const a = getAnalytics();
+    const entry = {
+        name: user.name,
+        email: user.email,
+        degree: user.degree,
+        phone: user.phone || '',
+        location: user.location || '',
+        bio: user.bio || '',
+        headline: user.headline || '',
+        interests: user.interests || [],
+        languages: user.languages || [],
+        joinedAt: new Date().toISOString()
+    };
     const idx = a.registeredUsers.findIndex(u => u.email === user.email);
-    const entry = { name: user.name, email: user.email, degree: user.degree, joinedAt: new Date().toISOString() };
     if (idx >= 0) a.registeredUsers[idx] = entry;
     else a.registeredUsers.unshift(entry);
     saveAnalytics(a);
+    saveUserToFirestore(user).catch(() => {});
+    // Sync to shared cloud storage
+    const shared = await fetchSharedData();
+    if (shared) {
+        const sidx = (shared.registeredUsers || []).findIndex(u => u.email === user.email);
+        if (sidx >= 0) shared.registeredUsers[sidx] = entry;
+        else shared.registeredUsers = [entry, ...(shared.registeredUsers || [])];
+        shared.loginHistory = [
+            { email: user.email, action: 'signup', timestamp: entry.joinedAt },
+            ...(shared.loginHistory || [])
+        ].slice(0, 100);
+        await updateSharedData(shared);
+    }
 }
 // Increment session count on every app open
 (function () {
@@ -85,6 +120,114 @@ function trackRegistration(user) {
 // Admin credentials
 const ADMIN_EMAIL = 'admin@careervibe.com';
 const ADMIN_PASSWORD = 'Admin@123';
+
+// ─── JSONBin (shared cloud storage so admin sees ALL users) ──────────────────
+// Setup: https://jsonbin.io → Sign up → Create Bin → paste keys below
+const JSONBIN_CONFIG = {
+    apiKey: 'YOUR_JSONBIN_API_KEY',  // ← Replace: your Master Key from jsonbin.io
+    binId:  'YOUR_JSONBIN_BIN_ID'    // ← Replace: your Bin ID from jsonbin.io
+};
+
+const FIREBASE_CONFIG = {
+    apiKey: 'AIzaSyCCOw8tG4_vg92RgTU7Jjmwc_zNNVuOogw',
+    authDomain: 'career-trend-analyzer.firebaseapp.com',
+    projectId: 'career-trend-analyzer',
+    storageBucket: 'career-trend-analyzer.firebasestorage.app',
+    messagingSenderId: '540729624200',
+    appId: '1:540729624200:web:d007a431b8be44b9f2813d'
+};
+
+let firestoreDB = null;
+function canUseFirestore() {
+    return FIREBASE_CONFIG.apiKey && !FIREBASE_CONFIG.apiKey.startsWith('YOUR_') && FIREBASE_CONFIG.projectId && !FIREBASE_CONFIG.projectId.startsWith('YOUR_');
+}
+
+async function initFirestore() {
+    if (firestoreDB || !canUseFirestore()) return firestoreDB;
+    try {
+        if (!firebase.apps.length) {
+            firebase.initializeApp(FIREBASE_CONFIG);
+        }
+        firestoreDB = firebase.firestore();
+        return firestoreDB;
+    } catch (e) {
+        console.warn('Firestore initialization failed:', e);
+        return null;
+    }
+}
+
+function emailToDocId(email) {
+    return (email || '').replace(/[.#$\[\]\/]/g, '_');
+}
+
+async function saveUserToFirestore(user) {
+    const db = await initFirestore();
+    if (!db || !user?.email) return;
+    const docId = emailToDocId(user.email);
+    await db.collection('users').doc(docId).set({
+        ...user,
+        joinedAt: user.joinedAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+    }, { merge: true });
+}
+
+async function addLoginEventToFirestore(entry) {
+    const db = await initFirestore();
+    if (!db) return;
+    await db.collection('loginEvents').add(entry);
+}
+
+async function updateUserLoginStats(email, action) {
+    const db = await initFirestore();
+    if (!db || !email) return;
+    const docId = emailToDocId(email);
+    await db.collection('users').doc(docId).set({
+        lastAction: action,
+        lastActivityAt: new Date().toISOString(),
+        loginCount: firebase.firestore.FieldValue.increment(1)
+    }, { merge: true });
+}
+
+async function fetchUsersFromFirestore() {
+    const db = await initFirestore();
+    if (!db) return [];
+    const snapshot = await db.collection('users').orderBy('joinedAt', 'desc').get();
+    return snapshot.docs.map(doc => doc.data());
+}
+
+async function fetchLoginHistoryFromFirestore() {
+    const db = await initFirestore();
+    if (!db) return [];
+    const snapshot = await db.collection('loginEvents').orderBy('timestamp', 'desc').limit(100).get();
+    return snapshot.docs.map(doc => doc.data());
+}
+
+async function fetchSharedData() {
+    if (!JSONBIN_CONFIG.apiKey || JSONBIN_CONFIG.apiKey.startsWith('YOUR_')) return null;
+    try {
+        const res = await fetch(
+            `https://api.jsonbin.io/v3/b/${JSONBIN_CONFIG.binId}/latest`,
+            { headers: { 'X-Master-Key': JSONBIN_CONFIG.apiKey } }
+        );
+        if (!res.ok) return null;
+        const json = await res.json();
+        return json.record;
+    } catch (e) { return null; }
+}
+
+async function updateSharedData(data) {
+    if (!JSONBIN_CONFIG.apiKey || JSONBIN_CONFIG.apiKey.startsWith('YOUR_')) return;
+    try {
+        await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_CONFIG.binId}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Master-Key': JSONBIN_CONFIG.apiKey
+            },
+            body: JSON.stringify(data)
+        });
+    } catch (e) { /* silent */ }
+}
 
 
 const softwareJobs = [
@@ -410,6 +553,7 @@ function handleProfileSave(event) {
     };
 
     saveUserToLocalStorage();
+    saveUserToFirestore(state.user).catch(() => {});
     alert('Profile saved successfully!');
     toggleProfileModal();
 }
@@ -684,6 +828,46 @@ function renderProfileModal() {
             </div>
         </div>
     `;
+}
+
+// Function to export users data to CSV
+function exportUsersToCSV() {
+    const analytics = state.adminData || getAnalytics();
+    const users = analytics.registeredUsers;
+
+    if (!users.length) {
+        alert('No users to export');
+        return;
+    }
+
+    // Create CSV content
+    const headers = ['Name', 'Email', 'Degree', 'Phone', 'Location', 'Bio', 'Headline', 'Interests', 'Languages', 'Joined Date'];
+    const csvContent = [
+        headers.join(','),
+        ...users.map(user => [
+            `"${user.name || ''}"`,
+            `"${user.email || ''}"`,
+            `"${user.degree || ''}"`,
+            `"${user.phone || ''}"`,
+            `"${user.location || ''}"`,
+            `"${user.bio || ''}"`,
+            `"${user.headline || ''}"`,
+            `"${(user.interests || []).join('; ')}"`,
+            `"${(user.languages || []).join('; ')}"`,
+            `"${user.joinedAt ? new Date(user.joinedAt).toLocaleDateString() : ''}"`
+        ].join(','))
+    ].join('\n');
+
+    // Create and download the file
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `careervibe_users_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
 }
 
 const screens = {
@@ -1381,12 +1565,19 @@ const screens = {
     `,
 
     adminDashboard: () => {
-        const analytics = getAnalytics();
-        const users = analytics.registeredUsers;
-        const pageViews = analytics.pageViews;
-        const loginHistory = analytics.loginHistory;
+        if (state.adminDataLoading) {
+            return `<div class="admin-loading"><i data-lucide="loader-2" class="admin-spinner"></i><p>Loading dashboard data...</p></div>`;
+        }
+        const analytics = state.adminData || getAnalytics();
+        const users = analytics.registeredUsers || [];
+        const pageViews = analytics.pageViews || {};
+        const loginHistory = analytics.loginHistory || [];
         const totalPageViews = Object.values(pageViews).reduce((a, b) => a + b, 0);
         const maxViews = Math.max(...Object.values(pageViews), 1);
+        const uniqueActiveUsers = new Set(loginHistory.map(l => l.email).filter(Boolean)).size;
+        const activeUsersLast7Days = new Set(loginHistory
+            .filter(l => new Date(l.timestamp) >= new Date(Date.now() - 7 * 24 * 60 * 60 * 1000))
+            .map(l => l.email).filter(Boolean)).size;
 
         const pageViewBars = Object.entries(pageViews)
             .sort((a, b) => b[1] - a[1])
@@ -1399,15 +1590,32 @@ const screens = {
                     <span class="admin-bar-count">${count}</span>
                 </div>`).join('');
 
+        const behaviorMap = loginHistory.reduce((map, event) => {
+            if (!event.email) return map;
+            if (!map[event.email]) {
+                map[event.email] = { count: 0, lastTimestamp: event.timestamp };
+            }
+            map[event.email].count += 1;
+            if (new Date(event.timestamp) > new Date(map[event.email].lastTimestamp)) {
+                map[event.email].lastTimestamp = event.timestamp;
+            }
+            return map;
+        }, {});
+
         const userRows = users.length
-            ? users.map(u => `
+            ? users.map(u => {
+                const stats = behaviorMap[u.email] || { count: 0, lastTimestamp: null };
+                return `
                 <tr>
                     <td>${u.name}</td>
                     <td style="font-size:0.8rem;opacity:0.75">${u.email}</td>
-                    <td><span class="admin-badge">${u.degree}</span></td>
-                    <td style="font-size:0.8rem;opacity:0.65">${new Date(u.joinedAt).toLocaleDateString()}</td>
-                </tr>`).join('')
-            : `<tr><td colspan="4" style="text-align:center;opacity:0.45;padding:20px">No users registered yet</td></tr>`;
+                    <td><span class="admin-badge">${u.degree || 'N/A'}</span></td>
+                    <td style="font-size:0.8rem;opacity:0.65">${u.joinedAt ? new Date(u.joinedAt).toLocaleDateString() : 'N/A'}</td>
+                    <td style="font-size:0.8rem;opacity:0.65">${stats.lastTimestamp ? new Date(stats.lastTimestamp).toLocaleString() : 'No activity'}</td>
+                    <td style="font-size:0.8rem;opacity:0.65">${stats.count}</td>
+                </tr>`;
+            }).join('')
+            : `<tr><td colspan="6" style="text-align:center;opacity:0.45;padding:20px">No users registered yet</td></tr>`;
 
         const loginRows = loginHistory.slice(0, 12).length
             ? loginHistory.slice(0, 12).map(l => `
@@ -1424,9 +1632,15 @@ const screens = {
                 <div>
                     <h1 style="font-size:1.8rem;margin:0;">Admin Dashboard</h1>
                     <p style="opacity:0.55;margin:4px 0 0;font-size:0.88rem;">CareerVibe Analytics &amp; Management</p>
+                    ${!canUseFirestore() ?
+                        '<p style="opacity:0.7;margin:4px 0 0;font-size:0.75rem;color:#f59e0b;">⚠️ Firestore not configured. Enable Firebase in app.js to show backend user data.</p>' :
+                        '<p style="opacity:0.7;margin:4px 0 0;font-size:0.75rem;color:#10b981;">✅ Connected to Firebase Firestore</p>'}
                 </div>
                 <button class="btn" onclick="navigate('login')" style="background:rgba(239,68,68,0.1);color:#ef4444;padding:10px 16px;display:flex;align-items:center;gap:8px;">
                     <i data-lucide="log-out" style="width:16px;height:16px;"></i> Exit Admin
+                </button>
+                <button class="btn" onclick="loadAdminData()" style="background:rgba(59,130,246,0.1);color:#3b82f6;padding:10px 16px;display:flex;align-items:center;gap:8px;margin-right:10px;">
+                    <i data-lucide="refresh-ccw" style="width:16px;height:16px;"></i> Refresh Data
                 </button>
             </div>
 
@@ -1453,6 +1667,20 @@ const screens = {
                     <div class="admin-stat-label">Total Page Views</div>
                 </div>
                 <div class="glass-card admin-stat-card">
+                    <div class="admin-stat-icon" style="background:linear-gradient(135deg,#8b5cf6,#6366f1);">
+                        <i data-lucide="users" style="width:22px;height:22px;"></i>
+                    </div>
+                    <div class="admin-stat-value">${uniqueActiveUsers}</div>
+                    <div class="admin-stat-label">Unique Active Users</div>
+                </div>
+                <div class="glass-card admin-stat-card">
+                    <div class="admin-stat-icon" style="background:linear-gradient(135deg,#14b8a6,#0d9488);">
+                        <i data-lucide="clock" style="width:22px;height:22px;"></i>
+                    </div>
+                    <div class="admin-stat-value">${activeUsersLast7Days}</div>
+                    <div class="admin-stat-label">Active Last 7 Days</div>
+                </div>
+                <div class="glass-card admin-stat-card">
                     <div class="admin-stat-icon" style="background:linear-gradient(135deg,#10b981,#059669);">
                         <i data-lucide="log-in" style="width:22px;height:22px;"></i>
                     </div>
@@ -1471,15 +1699,21 @@ const screens = {
 
             <div class="admin-tables-grid">
                 <div class="glass-card">
-                    <h3 style="margin:0 0 16px;font-size:1.05rem;display:flex;align-items:center;gap:8px;">
-                        <i data-lucide="user-check" style="width:18px;height:18px;color:var(--primary);"></i>
-                        Registered Users
+                    <h3 style="margin:0 0 16px;font-size:1.05rem;display:flex;align-items:center;gap:8px;justify-content:space-between;">
+                        <span style="display:flex;align-items:center;gap:8px;">
+                            <i data-lucide="user-check" style="width:18px;height:18px;color:var(--primary);"></i>
+                            Registered Users
+                        </span>
+                        <button class="btn" onclick="exportUsersToCSV()" style="background:linear-gradient(135deg,#10b981,#059669);color:white;padding:8px 12px;font-size:0.8rem;display:flex;align-items:center;gap:6px;border:none;border-radius:6px;">
+                            <i data-lucide="download" style="width:14px;height:14px;"></i> Export CSV
+                        </button>
                     </h3>
                     <div style="overflow-x:auto;">
                         <table class="admin-table">
-                            <thead><tr><th>Name</th><th>Email</th><th>Degree</th><th>Joined</th></tr></thead>
+                            <thead><tr><th>Name</th><th>Email</th><th>Degree</th><th>Joined</th><th>Last Active</th><th>Logins</th></tr></thead>
                             <tbody>${userRows}</tbody>
                         </table>
+                        <p style="font-size:0.75rem;opacity:0.6;margin-top:8px;text-align:center;">💡 Export CSV for complete user profiles including contact details, bio, and interests</p>
                     </div>
                 </div>
                 <div class="glass-card">
@@ -1513,10 +1747,35 @@ function handleFeedbackSubmit(event) {
     }
 }
 
+async function loadAdminData() {
+    state.adminDataLoading = true;
+    render();
+    const localAnalytics = getAnalytics();
+    const db = await initFirestore();
+    if (db) {
+        const users = await fetchUsersFromFirestore();
+        const loginHistory = await fetchLoginHistoryFromFirestore();
+        state.adminData = {
+            ...localAnalytics,
+            registeredUsers: users,
+            loginHistory: loginHistory.length ? loginHistory : localAnalytics.loginHistory
+        };
+    } else {
+        const shared = await fetchSharedData();
+        state.adminData = shared || localAnalytics;
+    }
+    state.adminDataLoading = false;
+    render();
+}
+
 function navigate(screenName) {
     state.currentScreen = screenName;
     const skipTracking = ['login', 'signup', 'adminLogin', 'adminDashboard'];
     if (!skipTracking.includes(screenName)) trackPageView(screenName);
+    if (screenName === 'adminDashboard') {
+        loadAdminData();
+        return;
+    }
     render();
 }
 
@@ -1550,7 +1809,12 @@ function handleLogin() {
         return;
     }
 
-    state.user = saved;
+    state.user = {
+        ...saved,
+        lastLoginAt: new Date().toISOString()
+    };
+    saveUserToLocalStorage();
+    saveUserToFirestore(state.user).catch(() => {});
     localStorage.setItem('careerVibeSession', 'true');
     trackLoginEvent(email, 'login');
     navigate('profile');
@@ -1581,6 +1845,8 @@ function handleSignup() {
         return;
     }
 
+    const joinedAt = new Date().toISOString();
+
     // Update state
     state.user = {
         ...state.user,
@@ -1588,7 +1854,9 @@ function handleSignup() {
         degree: degree,
         interests: ['Career Planning', 'Job Trends'], // Default interests
         email: email,
-        password: password
+        password: password,
+        joinedAt: joinedAt,
+        lastLoginAt: joinedAt
     };
 
     saveUserToLocalStorage();
