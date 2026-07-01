@@ -2,13 +2,13 @@ const savedUserData = JSON.parse(localStorage.getItem('careerVibeUser'));
 const isLoggedIn = localStorage.getItem('careerVibeSession') === 'true';
 
 let state = {
-    currentScreen: (isLoggedIn && savedUserData) ? 'profile' : 'login',
+    currentScreen: 'login',
     theme: 'default',
     user: savedUserData || {
         name: 'Alex Johnson',
         degree: 'BCA',
         interests: ['Frontend', 'AI'],
-        email: '',
+        email: '',  
         phone: '',
         headline: 'Aspiring professional',
         location: '',
@@ -48,12 +48,15 @@ function saveUserToLocalStorage() {
 
 // ─── Analytics ──────────────────────────────────────────────────────────────
 function getAnalytics() {
-    return JSON.parse(localStorage.getItem('careerVibeAnalytics')) || {
+    const data = JSON.parse(localStorage.getItem('careerVibeAnalytics')) || {
         totalSessions: 0,
         pageViews: {},
         registeredUsers: [],
-        loginHistory: []
+        loginHistory: [],
+        feedbacks: []
     };
+    if (!data.feedbacks) data.feedbacks = [];
+    return data;
 }
 function saveAnalytics(data) {
     localStorage.setItem('careerVibeAnalytics', JSON.stringify(data));
@@ -199,6 +202,19 @@ async function fetchLoginHistoryFromFirestore() {
     const db = await initFirestore();
     if (!db) return [];
     const snapshot = await db.collection('loginEvents').orderBy('timestamp', 'desc').limit(100).get();
+    return snapshot.docs.map(doc => doc.data());
+}
+
+async function saveFeedbackToFirestore(feedback) {
+    const db = await initFirestore();
+    if (!db) return;
+    await db.collection('feedbacks').add(feedback);
+}
+
+async function fetchFeedbackFromFirestore() {
+    const db = await initFirestore();
+    if (!db) return [];
+    const snapshot = await db.collection('feedbacks').orderBy('timestamp', 'desc').get();
     return snapshot.docs.map(doc => doc.data());
 }
 
@@ -558,6 +574,89 @@ function handleProfileSave(event) {
     toggleProfileModal();
 }
 
+function getSkillMatchTerms(skill) {
+    const normalized = (skill || '').toLowerCase().trim();
+    const mapping = {
+        javascript: ['javascript', 'js', 'frontend', 'web', 'ui', 'ux', 'react', 'angular', 'vue'],
+        react: ['react', 'frontend', 'ui', 'javascript', 'web'],
+        angular: ['angular', 'frontend', 'web', 'javascript'],
+        vue: ['vue', 'frontend', 'web', 'javascript'],
+        'ui design': ['ui', 'ux', 'designer', 'design'],
+        'ux design': ['ui', 'ux', 'designer', 'experience'],
+        ui: ['ui', 'ux', 'designer', 'design'],
+        ux: ['ui', 'ux', 'designer', 'experience'],
+        python: ['python', 'data', 'machine learning', 'backend', 'automation', 'ai'],
+        java: ['java', 'backend', 'android', 'software', 'developer'],
+        sql: ['sql', 'database', 'data', 'analytics', 'business intelligence'],
+        excel: ['excel', 'data', 'finance', 'analytics'],
+        accounting: ['accounting', 'finance', 'auditor', 'tax', 'chartered'],
+        marketing: ['marketing', 'digital', 'sales', 'brand', 'social media'],
+        sales: ['sales', 'business development', 'relationship', 'account'],
+        hr: ['hr', 'human resources', 'recruitment', 'talent'],
+        'machine learning': ['machine learning', 'data', 'ai', 'ml', 'research'],
+        'data science': ['data', 'science', 'analytics', 'machine learning', 'ai'],
+        'cloud computing': ['cloud', 'aws', 'azure', 'gcp', 'devops', 'architect'],
+        'graphic design': ['graphic', 'designer', 'design', 'creative', 'visual'],
+        'digital marketing': ['digital', 'marketing', 'social media', 'seo', 'content'],
+        'product management': ['product', 'manager', 'strategy', 'business'],
+        'business analytics': ['business', 'analytics', 'data', 'strategy']
+    };
+    return mapping[normalized] || [normalized];
+}
+
+function getJobsBySkills(skills, sourceJobs) {
+    const normalizedSkills = (skills || []).map(s => s.toLowerCase().trim()).filter(Boolean);
+    if (!normalizedSkills.length) return [];
+
+    const searchTerms = normalizedSkills.flatMap(getSkillMatchTerms);
+    const source = Array.isArray(sourceJobs) ? sourceJobs : [
+        ...state.allJobOpenings,
+        ...state.naukriJobs.software,
+        ...state.naukriJobs.commerce,
+        ...state.naukriJobs.business
+    ];
+
+    const matched = source.reduce((acc, job) => {
+        const title = (job.title || '').toLowerCase();
+        const company = (job.company || '').toLowerCase();
+        let score = 0;
+
+        searchTerms.forEach(term => {
+            if (!term) return;
+            if (title.includes(term)) score += 12;
+            if (company.includes(term)) score += 2;
+            const tokens = title.split(/[^a-z0-9]+/g);
+            if (tokens.includes(term)) score += 4;
+        });
+
+        if (score > 0) acc.push({ job, score });
+        return acc;
+    }, []);
+
+    return matched
+        .sort((a, b) => b.score - a.score)
+        .map(item => item.job)
+        .filter((job, index, array) => array.findIndex(j => j.id === job.id) === index)
+        .slice(0, 8);
+}
+
+function getAvailableJobsBySkills(skills) {
+    return getJobsBySkills(skills, state.allJobOpenings);
+}
+
+function handleSkillUpdate(event) {
+    if (event) event.preventDefault();
+    const skills = document.getElementById('profileSkillsInline').value
+        .split(',')
+        .map(s => s.trim())
+        .filter(s => s);
+    state.user.interests = skills;
+    saveUserToLocalStorage();
+    saveUserToFirestore(state.user).catch(() => {});
+    alert('Skills updated successfully!');
+    render();
+}
+
 const themes = ['default', 'midnight', 'ocean', 'forest'];
 
 function cycleTheme() {
@@ -870,6 +969,39 @@ function exportUsersToCSV() {
     document.body.removeChild(link);
 }
 
+function exportFeedbackToCSV() {
+    const analytics = state.adminData || getAnalytics();
+    const feedbacks = analytics.feedbacks || [];
+
+    if (!feedbacks.length) {
+        alert('No feedbacks to export');
+        return;
+    }
+
+    const headers = ['Name', 'Email', 'Rating', 'Category', 'Comments', 'Submitted Date'];
+    const csvContent = [
+        headers.join(','),
+        ...feedbacks.map(f => [
+            `"${f.name || ''}"`,
+            `"${f.email || ''}"`,
+            `"${f.rating || ''}"`,
+            `"${f.category || ''}"`,
+            `"${(f.text || '').replace(/"/g, '""')}"`,
+            `"${f.timestamp ? new Date(f.timestamp).toISOString() : ''}"`
+        ].join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `careervibe_feedback_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
 const screens = {
     login: () => `
         <div class="login-screen fade-in" style="display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 80vh; text-align: center;">
@@ -1043,7 +1175,46 @@ const screens = {
                     <span class="pulse-dot"></span>
                     <span>LIVE UPDATES</span>
                 </div>
-                <h2 class="interactive-title">Trending Jobs</h2>
+                <h2 class="interactive-title">Jobs Based on Your Skills</h2>
+                <p style="font-size: 0.95rem; opacity: 0.8; margin-top: 8px;">See roles matched to the skills you added in your profile.</p>
+                ${(() => {
+                    const matchedJobs = getAvailableJobsBySkills(state.user.interests);
+                    if (!matchedJobs.length) {
+                        return `
+                            <div class="job-container" style="margin-top: 24px;">
+                                <div class="glass-card" style="padding: 24px; text-align: center; opacity: 0.8;">
+                                    <p>Add skills to your profile to get personalized job matches here.</p>
+                                </div>
+                            </div>
+                        `;
+                    }
+                    return `
+                        <div class="job-container" style="margin-top: 24px;">
+                            ${matchedJobs.map(job => {
+                        const isSaved = state.savedItems.some(i => i.id === job.id);
+                        return `
+                                <div class="job-card fade-in" onclick="window.open('${job.link}', '_blank')">
+                                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                                        <span class="job-platform ${job.platform === 'LinkedIn' ? 'platform-linkedin' : 'platform-naukri'}">${job.platform}</span>
+                                        <div style="display: flex; align-items: center; gap: 10px;">
+                                            <div class="save-btn ${isSaved ? 'active' : ''}" style="width: 28px; height: 28px; border-radius: 8px;" onclick="toggleSave(event, ${JSON.stringify(job).replace(/"/g, '&quot;')}, 'Job')">
+                                                <i data-lucide="bookmark" style="width: 14px;"></i>
+                                            </div>
+                                            <i data-lucide="external-link" style="width: 14px; opacity: 0.5;"></i>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <h4 style="margin-bottom: 4px; font-size: 1.1rem;">${job.title}</h4>
+                                        <p style="font-size: 0.85rem; color: var(--text-muted);">${job.company || 'Top Employer'} • ${job.location || 'Remote'}</p>
+                                    </div>
+                                </div>
+                            `;
+                    }).join('')}
+                        </div>
+                    `;
+                })()}
+
+                <h2 class="interactive-title" style="margin-top: 40px;">Trending Jobs</h2>
                 <p style="font-size: 0.95rem; opacity: 0.8; margin-top: 8px;">Discover top opportunities across industries</p>
                 
                 <!-- Category: Software -->
@@ -1505,9 +1676,42 @@ const screens = {
 
                 <div class="glass-card" style="padding: 24px;">
                     <h3 style="margin-bottom: 15px; border-bottom: 1px solid var(--card-border); padding-bottom: 10px;">Skills</h3>
-                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px;">
                         ${(state.user.interests || []).map(skill => `<span class="tag" style="background: var(--secondary-glow); color: var(--secondary);">${skill}</span>`).join('')}
                     </div>
+                    <form onsubmit="handleSkillUpdate(event)">
+                        <div class="input-group form-full">
+                            <label>Update Skills (comma separated)</label>
+                            <input type="text" id="profileSkillsInline" value="${(state.user.interests || []).join(', ')}" placeholder="JavaScript, Data Science, UI/UX">
+                        </div>
+                        <button class="btn btn-secondary" type="submit" style="margin-top: 12px; width: auto;">Update Skills</button>
+                    </form>
+                </div>
+
+                <div class="glass-card" style="padding: 24px;">
+                    <h3 style="margin-bottom: 15px; border-bottom: 1px solid var(--card-border); padding-bottom: 10px;">Jobs Matched to Your Skills</h3>
+                    ${(() => {
+                        const matchedJobs = getJobsBySkills(state.user.interests);
+                        if (!matchedJobs.length) {
+                            return `<p style="opacity:0.8; line-height:1.6;">Add your skills in the profile above to see job recommendations that match your strengths.</p>`;
+                        }
+                        return matchedJobs.map(job => {
+                            const isSaved = state.savedItems.some(i => i.id === job.id);
+                            return `
+                                <div class="list-item" style="cursor: pointer; margin-bottom: 14px;" onclick="window.open('${job.link}', '_blank')">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px;">
+                                        <div style="flex:1;">
+                                            <h4 style="margin:0 0 6px; font-size:1rem;">${job.title}</h4>
+                                            <p style="margin:0; font-size:0.85rem; opacity:0.75;">${job.company || 'Top Employer'} • ${job.location || 'Remote'}</p>
+                                        </div>
+                                        <div class="save-btn ${isSaved ? 'active' : ''}" style="width: 32px; height: 32px;" onclick="toggleSave(event, ${JSON.stringify(job).replace(/"/g, '&quot;')}, 'Job')">
+                                            <i data-lucide="bookmark" style="width: 16px;"></i>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    })()}
                 </div>
 
                 <div class="glass-card form-full" style="padding: 24px;">
@@ -1572,12 +1776,19 @@ const screens = {
         const users = analytics.registeredUsers || [];
         const pageViews = analytics.pageViews || {};
         const loginHistory = analytics.loginHistory || [];
+        const feedbacks = analytics.feedbacks || [];
+        
         const totalPageViews = Object.values(pageViews).reduce((a, b) => a + b, 0);
         const maxViews = Math.max(...Object.values(pageViews), 1);
         const uniqueActiveUsers = new Set(loginHistory.map(l => l.email).filter(Boolean)).size;
         const activeUsersLast7Days = new Set(loginHistory
             .filter(l => new Date(l.timestamp) >= new Date(Date.now() - 7 * 24 * 60 * 60 * 1000))
             .map(l => l.email).filter(Boolean)).size;
+
+        const totalFeedbacks = feedbacks.length;
+        const averageRating = totalFeedbacks > 0 
+            ? (feedbacks.reduce((sum, f) => sum + f.rating, 0) / totalFeedbacks).toFixed(1) 
+            : '0.0';
 
         const pageViewBars = Object.entries(pageViews)
             .sort((a, b) => b[1] - a[1])
@@ -1625,6 +1836,46 @@ const screens = {
                     <td style="font-size:0.78rem;opacity:0.6">${new Date(l.timestamp).toLocaleString()}</td>
                 </tr>`).join('')
             : `<tr><td colspan="3" style="text-align:center;opacity:0.45;padding:20px">No activity yet</td></tr>`;
+
+        const getStarsHtml = (rating) => {
+            let stars = '';
+            for (let i = 1; i <= 5; i++) {
+                if (i <= rating) {
+                    stars += `<i data-lucide="star" style="width:13px;height:13px;color:#facc15;fill:#facc15;margin-right:2px;"></i>`;
+                } else {
+                    stars += `<i data-lucide="star" style="width:13px;height:13px;color:rgba(255,255,255,0.15);margin-right:2px;"></i>`;
+                }
+            }
+            return stars;
+        };
+
+        const feedbackListHtml = feedbacks.length
+            ? feedbacks.map(f => {
+                const dateStr = f.timestamp ? new Date(f.timestamp).toLocaleString() : 'N/A';
+                let categoryColor = '#3b82f6';
+                if (f.category === 'Bug') categoryColor = '#ef4444';
+                else if (f.category === 'Feature') categoryColor = '#10b981';
+                else if (f.category === 'Content') categoryColor = '#8b5cf6';
+                
+                return `
+                <div class="feedback-card" style="border: 1px solid var(--card-border); background: rgba(255,255,255,0.02); border-radius: 20px; padding: 20px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 12px; transition: all 0.3s;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px;">
+                        <div>
+                            <h4 style="margin: 0; font-size: 1rem; color: #fff;">${f.name}</h4>
+                            <p style="font-size: 0.8rem; margin: 2px 0 0; opacity: 0.7;">${f.email}</p>
+                        </div>
+                        <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+                            <span class="admin-badge" style="background: ${categoryColor}1a; color: ${categoryColor}; border: 1px solid ${categoryColor}33; font-size: 0.68rem; padding: 2px 8px; border-radius: 6px;">${f.category}</span>
+                            <div style="display: flex; align-items: center;">${getStarsHtml(f.rating)}</div>
+                        </div>
+                    </div>
+                    <p style="margin: 0; font-size: 0.92rem; color: var(--text); line-height: 1.5; white-space: pre-wrap; font-style: italic; background: rgba(0,0,0,0.15); padding: 12px 16px; border-radius: 12px;">"${f.text}"</p>
+                    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; opacity: 0.5;">
+                        <span>Submitted: ${dateStr}</span>
+                    </div>
+                </div>`;
+            }).join('')
+            : `<div style="text-align:center;opacity:0.45;padding:40px">No feedback gathered from users yet</div>`;
 
         return `
         <div class="admin-dashboard fade-in">
@@ -1687,6 +1938,20 @@ const screens = {
                     <div class="admin-stat-value">${loginHistory.filter(l => l.action === 'login' || l.action === 'signup').length}</div>
                     <div class="admin-stat-label">Total Logins</div>
                 </div>
+                <div class="glass-card admin-stat-card">
+                    <div class="admin-stat-icon" style="background:linear-gradient(135deg,#eab308,#ca8a04);">
+                        <i data-lucide="star" style="width:22px;height:22px;"></i>
+                    </div>
+                    <div class="admin-stat-value">${averageRating} <span style="font-size:1rem;opacity:0.7;">★</span></div>
+                    <div class="admin-stat-label">Average Rating</div>
+                </div>
+                <div class="glass-card admin-stat-card">
+                    <div class="admin-stat-icon" style="background:linear-gradient(135deg,#ec4899,#db2777);">
+                        <i data-lucide="message-square" style="width:22px;height:22px;"></i>
+                    </div>
+                    <div class="admin-stat-value">${totalFeedbacks}</div>
+                    <div class="admin-stat-label">Total Feedbacks</div>
+                </div>
             </div>
 
             <div class="glass-card" style="margin-bottom:20px;">
@@ -1697,14 +1962,14 @@ const screens = {
                 ${pageViewBars || '<p style="opacity:0.45;text-align:center;padding:20px 0">No page views yet — users need to navigate the app first.</p>'}
             </div>
 
-            <div class="admin-tables-grid">
+            <div class="admin-tables-grid" style="margin-bottom:20px;">
                 <div class="glass-card">
                     <h3 style="margin:0 0 16px;font-size:1.05rem;display:flex;align-items:center;gap:8px;justify-content:space-between;">
                         <span style="display:flex;align-items:center;gap:8px;">
                             <i data-lucide="user-check" style="width:18px;height:18px;color:var(--primary);"></i>
                             Registered Users
                         </span>
-                        <button class="btn" onclick="exportUsersToCSV()" style="background:linear-gradient(135deg,#10b981,#059669);color:white;padding:8px 12px;font-size:0.8rem;display:flex;align-items:center;gap:6px;border:none;border-radius:6px;">
+                        <button class="btn" onclick="exportUsersToCSV()" style="background:linear-gradient(135deg,#10b981,#059669);color:white;padding:8px 12px;font-size:0.8rem;display:flex;align-items:center;gap:6px;border:none;border-radius:6px;width:auto;">
                             <i data-lucide="download" style="width:14px;height:14px;"></i> Export CSV
                         </button>
                     </h3>
@@ -1729,6 +1994,21 @@ const screens = {
                     </div>
                 </div>
             </div>
+
+            <div class="glass-card">
+                <h3 style="margin:0 0 20px;font-size:1.05rem;display:flex;align-items:center;gap:8px;justify-content:space-between;flex-wrap:wrap;">
+                    <span style="display:flex;align-items:center;gap:8px;">
+                        <i data-lucide="message-square" style="width:18px;height:18px;color:var(--primary);"></i>
+                        User Feedbacks
+                    </span>
+                    <button class="btn" onclick="exportFeedbackToCSV()" style="background:linear-gradient(135deg,#10b981,#059669);color:white;padding:8px 12px;font-size:0.8rem;display:flex;align-items:center;gap:6px;border:none;border-radius:6px;width:auto;">
+                        <i data-lucide="download" style="width:14px;height:14px;"></i> Export Feedback CSV
+                    </button>
+                </h3>
+                <div class="feedback-list-container">
+                    ${feedbackListHtml}
+                </div>
+            </div>
         </div>
         `;
     }
@@ -1737,7 +2017,41 @@ const screens = {
 function handleFeedbackSubmit(event) {
     event.preventDefault();
 
-    // Simulate API call
+    const rating = document.querySelector('input[name="rating"]:checked')?.value || '5';
+    const category = document.getElementById('feedbackCategory').value;
+    const text = document.getElementById('feedbackText').value.trim();
+
+    if (!text) {
+        alert('Please enter your feedback comments.');
+        return;
+    }
+
+    const feedbackEntry = {
+        email: state.user.email || 'anonymous@careervibe.com',
+        name: state.user.name || 'Anonymous User',
+        rating: parseInt(rating),
+        category: category,
+        text: text,
+        timestamp: new Date().toISOString()
+    };
+
+    // Save locally
+    const a = getAnalytics();
+    a.feedbacks = [feedbackEntry, ...(a.feedbacks || [])];
+    saveAnalytics(a);
+
+    // Save to Firestore
+    saveFeedbackToFirestore(feedbackEntry).catch(() => {});
+
+    // Sync to shared cloud storage
+    fetchSharedData().then(async (shared) => {
+        if (shared) {
+            shared.feedbacks = [feedbackEntry, ...(shared.feedbacks || [])];
+            await updateSharedData(shared);
+        }
+    }).catch(() => {});
+
+    // Hide form and show success
     document.querySelector('form').style.display = 'none';
     document.getElementById('feedbackSuccess').style.display = 'block';
 
@@ -1753,13 +2067,33 @@ async function loadAdminData() {
     const localAnalytics = getAnalytics();
     const db = await initFirestore();
     if (db) {
-        const users = await fetchUsersFromFirestore();
-        const loginHistory = await fetchLoginHistoryFromFirestore();
-        state.adminData = {
-            ...localAnalytics,
-            registeredUsers: users,
-            loginHistory: loginHistory.length ? loginHistory : localAnalytics.loginHistory
-        };
+        try {
+            // Fetch users, login history, and feedbacks independently
+            // If one fails (e.g. due to missing Firestore security rules for a new collection),
+            // it won't crash the others and the dashboard will still show registered users correctly.
+            const users = await fetchUsersFromFirestore().catch(e => {
+                console.warn('Failed to fetch users from Firestore:', e);
+                return null;
+            });
+            const loginHistory = await fetchLoginHistoryFromFirestore().catch(e => {
+                console.warn('Failed to fetch login history from Firestore:', e);
+                return null;
+            });
+            const feedbacks = await fetchFeedbackFromFirestore().catch(e => {
+                console.warn('Failed to fetch feedbacks from Firestore:', e);
+                return null;
+            });
+
+            state.adminData = {
+                ...localAnalytics,
+                registeredUsers: users !== null ? users : localAnalytics.registeredUsers,
+                loginHistory: loginHistory !== null && loginHistory.length ? loginHistory : localAnalytics.loginHistory,
+                feedbacks: feedbacks !== null && feedbacks.length ? feedbacks : localAnalytics.feedbacks || []
+            };
+        } catch (e) {
+            console.warn('Failed to load Firestore admin data:', e);
+            state.adminData = localAnalytics;
+        }
     } else {
         const shared = await fetchSharedData();
         state.adminData = shared || localAnalytics;
@@ -1770,6 +2104,15 @@ async function loadAdminData() {
 
 function navigate(screenName) {
     state.currentScreen = screenName;
+    
+    // Toggle admin mode styling on body
+    const adminScreens = ['adminLogin', 'adminDashboard'];
+    if (adminScreens.includes(screenName)) {
+        document.body.classList.add('admin-mode');
+    } else {
+        document.body.classList.remove('admin-mode');
+    }
+
     const skipTracking = ['login', 'signup', 'adminLogin', 'adminDashboard'];
     if (!skipTracking.includes(screenName)) trackPageView(screenName);
     if (screenName === 'adminDashboard') {
